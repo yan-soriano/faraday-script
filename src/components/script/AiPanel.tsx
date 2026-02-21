@@ -389,17 +389,20 @@ export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props)
             disabled={!chatInput.trim() || isGenerating}
             onClick={() => {
               if (!chatInput.trim()) return;
-              setMessages((m) => [...m, { role: 'user', text: chatInput }]);
+              const userMessage = chatInput.trim();
+              setMessages((m) => [...m, { role: 'user', text: userMessage }]);
               setChatInput('');
-              // Chat with AI
               let response = '';
               setIsGenerating(true);
               streamGeneration({
                 body: {
-                  type: 'outline', // reuse for chat
-                  title: title || 'Без названия',
-                  synopsis: chatInput,
+                  type: 'chat',
+                  message: userMessage,
+                  title: title || '',
+                  synopsis: synopsis || '',
                   characters,
+                  scenes,
+                  selectedSceneIndex: selectedScene,
                 },
                 onDelta: (chunk) => {
                   response += chunk;
