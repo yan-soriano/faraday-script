@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState } from 'react';
 import { Sparkles, MessageSquare, Send, Wand2, BookOpen, Loader2, FileText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -16,8 +16,15 @@ interface Props {
   onSelectScene: (i: number) => void;
 }
 
+/** Build the full payload that includes project context for every AI call */
+function useProjectPayload(scenes: ParsedScene[], selectedScene: number | null) {
+  const { title, synopsis, characters } = useProjectStore();
+  return { title, synopsis, characters, scenes, selectedSceneIndex: selectedScene };
+}
+
 export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props) {
   const { title, synopsis, characters } = useProjectStore();
+  const payload = useProjectPayload(scenes, selectedScene);
   const [chatInput, setChatInput] = useState('');
   const [dialogueMode, setDialogueMode] = useState<'selected' | 'all'>('selected');
   const [messages, setMessages] = useState<{ role: 'user' | 'ai'; text: string }[]>([]);
@@ -32,22 +39,36 @@ export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props)
     ? 'Заполните синопсис и персонажей на вкладке «Синопсис»'
     : undefined;
 
-  const insertTextToEditor = (text: string) => {
-    const editor = (window as any).__kscriptEditor;
-    if (editor) {
-      editor.commands.setContent(text);
-    }
+  // ─── Chat (free-form, never generates outline) ───
+  const handleChat = async () => {
+    if (!chatInput.trim() || isGenerating) return;
+    const userMessage = chatInput.trim();
+    setMessages((m) => [...m, { role: 'user', text: userMessage }]);
+    setChatInput('');
+    let response = '';
+    setIsGenerating(true);
+
+    await streamGeneration({
+      body: { type: 'chat', message: userMessage, ...payload },
+      onDelta: (chunk) => {
+        response += chunk;
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.role === 'ai') {
+            return prev.map((m, i) => i === prev.length - 1 ? { ...m, text: response } : m);
+          }
+          return [...prev, { role: 'ai', text: response }];
+        });
+      },
+      onDone: () => setIsGenerating(false),
+      onError: (err) => {
+        setIsGenerating(false);
+        setMessages((m) => [...m, { role: 'ai', text: `❌ ${err}` }]);
+      },
+    });
   };
 
-  const appendTextToEditor = (existingText: string, newChunk: string) => {
-    const editor = (window as any).__kscriptEditor;
-    if (editor) {
-      // Build complete text and set it
-      return existingText + newChunk;
-    }
-    return existingText + newChunk;
-  };
-
+  // ─── Outline (button only) ───
   const handleGenerateOutline = async () => {
     if (!isReady || isGenerating) return;
     setIsGenerating(true);
@@ -58,7 +79,7 @@ export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props)
     const editor = (window as any).__kscriptEditor;
 
     await streamGeneration({
-      body: { type: 'outline', title, synopsis, characters },
+      body: { type: 'outline', ...payload },
       onDelta: (chunk) => {
         fullText += chunk;
         if (editor) {
@@ -80,6 +101,7 @@ export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props)
     });
   };
 
+  // ─── Dialogue ───
   const handleGenerateDialogue = async () => {
     if (!isReady || !hasOutline || isGenerating) return;
 
@@ -100,9 +122,7 @@ export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props)
       await streamGeneration({
         body: {
           type: 'dialogue',
-          title,
-          synopsis,
-          characters,
+          ...payload,
           scene: {
             heading: scene.heading,
             participants: scene.participants.join(', '),
@@ -114,7 +134,6 @@ export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props)
           setGenerationProgress(`Диалог для сцены ${selectedScene}... (${dialogueText.length} символов)`);
         },
         onDone: () => {
-          // Insert dialogue into editor after the scene
           const editor = (window as any).__kscriptEditor;
           if (editor) {
             const currentContent = editor.getText();
@@ -126,7 +145,6 @@ export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props)
               if (/^(ИНТ\.|НАТ\.)/i.test(lines[i].trim())) {
                 sceneCount++;
                 if (sceneCount === selectedScene) {
-                  // Find end of this scene's action (before next heading or end)
                   let j = i + 1;
                   while (j < lines.length && !/^(ИНТ\.|НАТ\.)/i.test(lines[j].trim())) j++;
                   insertPos = j;
@@ -168,9 +186,7 @@ export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props)
           streamGeneration({
             body: {
               type: 'dialogue',
-              title,
-              synopsis,
-              characters,
+              ...payload,
               scene: {
                 heading: scene.heading,
                 participants: scene.participants.join(', '),
@@ -179,7 +195,6 @@ export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props)
             },
             onDelta: (chunk) => { dialogueText += chunk; },
             onDone: () => {
-              // Insert into editor
               const editor = (window as any).__kscriptEditor;
               if (editor) {
                 const currentContent = editor.getText();
@@ -222,6 +237,7 @@ export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props)
     }
   };
 
+  // ─── Logline ───
   const handleGenerateLogline = async () => {
     if (!isReady || isGenerating) return;
     setIsGenerating(true);
@@ -230,7 +246,7 @@ export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props)
     let fullText = '';
 
     await streamGeneration({
-      body: { type: 'logline', title, synopsis },
+      body: { type: 'logline', ...payload },
       onDelta: (chunk) => {
         fullText += chunk;
         setMessages((prev) => {
@@ -387,40 +403,7 @@ export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props)
             variant="ghost"
             className="h-8 w-8 shrink-0"
             disabled={!chatInput.trim() || isGenerating}
-            onClick={() => {
-              if (!chatInput.trim()) return;
-              const userMessage = chatInput.trim();
-              setMessages((m) => [...m, { role: 'user', text: userMessage }]);
-              setChatInput('');
-              let response = '';
-              setIsGenerating(true);
-              streamGeneration({
-                body: {
-                  type: 'chat',
-                  message: userMessage,
-                  title: title || '',
-                  synopsis: synopsis || '',
-                  characters,
-                  scenes,
-                  selectedSceneIndex: selectedScene,
-                },
-                onDelta: (chunk) => {
-                  response += chunk;
-                  setMessages((prev) => {
-                    const last = prev[prev.length - 1];
-                    if (last?.role === 'ai') {
-                      return prev.map((m, i) => i === prev.length - 1 ? { ...m, text: response } : m);
-                    }
-                    return [...prev, { role: 'ai', text: response }];
-                  });
-                },
-                onDone: () => setIsGenerating(false),
-                onError: (err) => {
-                  setIsGenerating(false);
-                  setMessages((m) => [...m, { role: 'ai', text: `❌ ${err}` }]);
-                },
-              });
-            }}
+            onClick={handleChat}
           >
             <Send size={14} />
           </Button>
