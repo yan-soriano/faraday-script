@@ -79,36 +79,61 @@
   height: 0;
 }
 
-/* Scene heading detection via content - styled in component */
-.scene-heading-line {
+/* Custom screenplay node styles */
+.screenplay-editor .sp-scene-heading {
   font-weight: 700;
   text-transform: uppercase;
   color: hsl(42 80% 60%);
   border-left: 3px solid hsl(42 80% 55%);
   padding-left: 0.75rem;
   margin-top: 1.5rem;
+  margin-bottom: 0.25rem;
 }
 
-.character-cue-line {
+.screenplay-editor .sp-scene-participants {
+  text-transform: uppercase;
+  color: hsl(40 10% 75%);
+  font-size: 12px;
+  margin-bottom: 0.5rem;
+  padding-left: 0.75rem;
+}
+
+.screenplay-editor .sp-action {
+  margin: 0.15rem 0;
+}
+
+.screenplay-editor .sp-character-cue {
   text-align: center;
   text-transform: uppercase;
   font-weight: 600;
   color: hsl(40 10% 90%);
   margin-top: 0.75rem;
+  margin-bottom: 0;
 }
 
-.dialogue-line {
+.screenplay-editor .sp-dialogue {
   text-align: center;
   max-width: 70%;
   margin-left: auto;
   margin-right: auto;
   color: hsl(40 10% 80%);
+  margin-bottom: 0.25rem;
 }
 
-.parenthetical-line {
+.screenplay-editor .sp-parenthetical {
   text-align: center;
   font-style: italic;
   color: hsl(225 8% 55%);
+  margin-bottom: 0;
+}
+
+.screenplay-editor .sp-transition {
+  text-align: right;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: hsl(40 10% 70%);
+  margin-top: 0.75rem;
+  margin-bottom: 0.25rem;
 }
 
 /* Gold accent glow effect */
