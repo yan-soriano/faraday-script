@@ -1,8 +1,12 @@
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
-import { useEffect, useCallback, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { useProjectStore } from '@/stores/useProjectStore';
+import { allScreenplayNodes } from '@/lib/tiptap/screenplay-nodes';
+import { ScreenplayKeymap } from '@/lib/tiptap/screenplay-keymap';
+import { ScreenplayAutoformat } from '@/lib/tiptap/screenplay-autoformat';
+import FormatDropdown from './FormatDropdown';
 
 interface Props {
   onContentChange?: (text: string) => void;
@@ -25,8 +29,11 @@ export default function ScriptEditor({ onContentChange }: Props) {
         orderedList: false,
       }),
       Placeholder.configure({
-        placeholder: 'Начните писать сценарий или нажмите «Создать поэпизодник» в панели AI...\n\nИНТ. ШКОЛА — ДЕНЬ\nАЙДАР, ДАНА, ЕРЛАН\nДети входят в класс и обнаруживают...',
+        placeholder: 'Начните писать сценарий или нажмите «Создать поэпизодник» в панели AI...',
       }),
+      ...allScreenplayNodes,
+      ScreenplayKeymap,
+      ScreenplayAutoformat,
     ],
     content: editorContent || '',
     editorProps: {
@@ -38,7 +45,6 @@ export default function ScriptEditor({ onContentChange }: Props) {
       const json = editor.getJSON();
       const text = editor.getText();
 
-      // Debounced save
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
         setEditorContent(json);
@@ -49,7 +55,6 @@ export default function ScriptEditor({ onContentChange }: Props) {
     },
   });
 
-  // Expose editor globally for AI panel insertion
   useEffect(() => {
     if (editor) {
       (window as any).__kscriptEditor = editor;
@@ -60,8 +65,11 @@ export default function ScriptEditor({ onContentChange }: Props) {
   }, [editor]);
 
   return (
-    <div className="screenplay-editor h-full overflow-y-auto bg-screenplay-bg rounded-lg border border-border">
-      <EditorContent editor={editor} className="h-full" />
+    <div className="screenplay-editor h-full flex flex-col overflow-hidden bg-screenplay-bg rounded-lg border border-border">
+      <FormatDropdown editor={editor} />
+      <div className="flex-1 overflow-y-auto">
+        <EditorContent editor={editor} className="h-full" />
+      </div>
     </div>
   );
 }
