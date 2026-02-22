@@ -1,9 +1,18 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+﻿import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
+const ALLOWED_ORIGINS = new Set(
+  [
+    "http://localhost:5173",
+    "http://localhost:8080",
+    (Deno.env.get("PROD_DOMAIN") ?? "").trim().replace(/\/$/, ""),
+  ].filter(Boolean),
+);
+
+const BASE_CORS_HEADERS = {
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  Vary: "Origin",
 };
 
 type GenerationType = "chat" | "outline" | "dialogue" | "logline";
@@ -88,17 +97,29 @@ CHAT BEHAVIOUR:
 // ═══════════════════════════════════════════════════════
 // OUTLINE — strict 40–45 scene generation with Kaz Pro
 // ═══════════════════════════════════════════════════════
-const OUTLINE_SYSTEM_PROMPT = `Сен Kaz Pro жүйесіне сүйенетін кәсіби поэпизодник генераторысың.
+const OUTLINE_SYSTEM_PROMPT = `Ты сценарный ассистент. Твоя задача: вернуть только поэпизодник.
 
-МИНДЕТ:
+КРИТИЧЕСКИЕ ПРАВИЛА ВЫВОДА:
+- Никаких объяснений, комментариев, вступлений, выводов, чеклистов, оценок, рекомендаций.
+- Никаких заголовков вроде "Вот поэпизодник".
+- Верни только список эпизодов.
+- Формат каждого эпизода строго такой:
+
+ИНТ./НАТ. ЛОКАЦИЯ - ВРЕМЯ
+УЧАСТНИК 1, УЧАСТНИК 2, УЧАСТНИК 3
+
+Полное описание эпизода
+
+- Между эпизодами оставляй ровно одну пустую строку.
+- Между участниками всегда запятая, все имя  в ВЕРХНЕМ РЕГИСТРЕ.
+- Описание эпизода: 3-6 предложений, только действие и драматургия, без служебных комментариев.
+- Язык: казахский.
+
+МІНДЕТ:
 - Дәл 40–45 көріністен тұратын поэпизодник құр.
 - Әр көріністі бөлек блок ретінде жаз.
 
-ФОРМАТ (ӘР КӨРІНІС ҮШІН МІНДЕТТІ):
-1) Бірінші жол: "ИНТ." немесе "НАТ." + бос орын + ЛОКАЦИЯ АТАУЫ
-2) Екінші жол: ҚАТЫСУШЫЛАР (БАРЛЫҒЫ ҮЛКЕН ӘРІППЕН, үтір арқылы бөлінген)
-3) Үшінші бөлім: тек әрекет сипаттамасы, 2–5 сөйлем, диалог ЖОҚ.
-
+Поэпизодник құру барысында сценарий келесідей структурураға сәйкес болуы керек:
 KAZ PRO ҚҰРЫЛЫМЫ:
 - 0–3 мин: кіріспе, әлем мен кейіпкерлерді таныстыру, қызықты интрига.
 - 3–15 мин: басты мәселе нақты анықталады, кейіпкерлер оны түсінеді.
@@ -270,6 +291,55 @@ ${selectedScene.actionText || ""}`
     .join("\n");
 }
 
+function buildDialogueContextPayload(
+  payload: ProjectPayload,
+  dialogueScene?: DialogueScenePayload,
+): ProjectPayload {
+  const scenes = payload.scenes || [];
+  if (scenes.length === 0) return payload;
+
+  let selectedSceneIndex =
+    payload.selectedSceneIndex != null &&
+      scenes.some((s) => s.index === payload.selectedSceneIndex)
+      ? payload.selectedSceneIndex
+      : null;
+
+  if (selectedSceneIndex == null && dialogueScene?.heading) {
+    const heading = dialogueScene.heading.trim().toUpperCase();
+    const matched = scenes.find((s) => s.heading.trim().toUpperCase() === heading);
+    if (matched) selectedSceneIndex = matched.index;
+  }
+
+  if (selectedSceneIndex == null) {
+    selectedSceneIndex = scenes[0]?.index ?? null;
+  }
+
+  const selectedPos = scenes.findIndex((s) => s.index === selectedSceneIndex);
+  if (selectedPos === -1) return payload;
+
+  // Keep only selected scene + up to two nearest neighbors.
+  let start = Math.max(0, selectedPos - 1);
+  let end = Math.min(scenes.length, selectedPos + 2);
+
+  while (end - start < 3) {
+    if (start > 0) {
+      start--;
+      continue;
+    }
+    if (end < scenes.length) {
+      end++;
+      continue;
+    }
+    break;
+  }
+
+  return {
+    ...payload,
+    scenes: scenes.slice(start, end),
+    selectedSceneIndex,
+  };
+}
+
 function buildOutlineUserPrompt(payload: ProjectPayload): string {
   const { title, synopsis } = payload;
 
@@ -338,6 +408,23 @@ C) ЖАҚСАРТУ ҰСЫНЫСТАРЫ:
 // Main handler
 // ═══════════════════════════════════════════════════════
 serve(async (req) => {
+  const origin = (req.headers.get("origin") ?? "").trim().replace(/\/$/, "");
+  const isAllowedOrigin = !origin || ALLOWED_ORIGINS.has(origin);
+  const corsHeaders = {
+    ...BASE_CORS_HEADERS,
+    ...(origin ? { "Access-Control-Allow-Origin": origin } : {}),
+  };
+
+  if (!isAllowedOrigin) {
+    return new Response(
+      JSON.stringify({ error: "Origin not allowed" }),
+      {
+        status: 403,
+        headers: { ...BASE_CORS_HEADERS, "Content-Type": "application/json" },
+      },
+    );
+  }
+
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
@@ -355,11 +442,12 @@ serve(async (req) => {
       selectedSceneIndex: body.selectedSceneIndex ?? null,
     };
 
-    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
-    if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY is not configured");
+    const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
+    if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured");
+    const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-2.5-flash";
 
     // Auto-inject project context for ALL request types
-    const projectContext = buildProjectContext(baseProjectPayload);
+    let projectContext = buildProjectContext(baseProjectPayload);
 
     let systemPrompt = GLOBAL_SYSTEM_PROMPT;
     let userPrompt = "";
@@ -386,6 +474,11 @@ serve(async (req) => {
           ...baseProjectPayload,
           scene: body.scene,
         };
+        const scopedContextPayload = buildDialogueContextPayload(
+          baseProjectPayload,
+          dialoguePayload.scene,
+        );
+        projectContext = buildProjectContext(scopedContextPayload);
         systemPrompt = `${GLOBAL_SYSTEM_PROMPT}\n\n${DIALOGUE_SYSTEM_PROMPT}`;
         userPrompt = buildDialogueUserPrompt(dialoguePayload);
         break;
@@ -406,15 +499,15 @@ serve(async (req) => {
     }
 
     const response = await fetch(
-      "https://ai.gateway.lovable.dev/v1/chat/completions",
+      "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${LOVABLE_API_KEY}`,
+          Authorization: `Bearer ${GEMINI_API_KEY}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "google/gemini-2.5-flash",
+          model: GEMINI_MODEL,
           messages: [
             { role: "system", content: systemPrompt },
             { role: "system", content: projectContext },
@@ -428,28 +521,32 @@ serve(async (req) => {
     if (!response.ok) {
       if (response.status === 429) {
         return new Response(
-          JSON.stringify({ error: "Лимит запросов превышен, попробуйте позже." }),
+          JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
           {
             status: 429,
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           },
         );
       }
-      if (response.status === 402) {
-        return new Response(
-          JSON.stringify({ error: "Необходимо пополнить кредиты AI." }),
-          {
-            status: 402,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          },
-        );
-      }
+
       const t = await response.text();
-      console.error("AI gateway error:", response.status, t);
+      console.error("Gemini error:", response.status, t);
+
+      let providerMessage = "AI service error";
+      try {
+        const parsed = JSON.parse(t);
+        const msg = parsed?.error?.message;
+        if (typeof msg === "string" && msg.trim()) {
+          providerMessage = msg;
+        }
+      } catch {
+        // Keep fallback message when provider response is not JSON.
+      }
+
       return new Response(
-        JSON.stringify({ error: "Ошибка AI сервиса" }),
+        JSON.stringify({ error: providerMessage }),
         {
-          status: 500,
+          status: response.status,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         },
       );
@@ -469,3 +566,4 @@ serve(async (req) => {
     );
   }
 });
+

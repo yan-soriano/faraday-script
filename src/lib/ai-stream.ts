@@ -1,7 +1,7 @@
 const GENERATE_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate`;
 
 interface StreamOptions {
-  body: Record<string, any>;
+  body: Record<string, unknown>;
   onDelta: (text: string) => void;
   onDone: () => void;
   onError: (error: string) => void;
@@ -13,7 +13,7 @@ export async function streamGeneration({ body, onDelta, onDone, onError }: Strea
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+        apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
       },
       body: JSON.stringify(body),
     });
