@@ -6,24 +6,50 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useProjectStore } from '@/stores/useProjectStore';
 import { canGenerate } from '@/lib/validation';
 import { streamGeneration } from '@/lib/ai-stream';
-import type { ParsedScene } from '@/types/screenplay';
+import { supabase } from '@/integrations/supabase/client';
+import {
+  getOrCreateProject,
+  saveOutlineToSupabase,
+  updateSceneFullText,
+} from '@/lib/scenes-api';
+import { applyAutoFormat } from '@/lib/scene-sanitizer';
+import type { SceneForAi } from './ScriptTab';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 
 interface Props {
-  scenes: ParsedScene[];
+  scenes: SceneForAi[];
   selectedScene: number | null;
   onSelectScene: (i: number) => void;
+  projectId: string | null;
+  onScenesSaved?: () => void;
 }
 
-/** Build the full payload that includes project context for every AI call */
-function useProjectPayload(scenes: ParsedScene[], selectedScene: number | null) {
+function useProjectPayload(scenes: SceneForAi[], selectedScene: number | null) {
   const { title, synopsis, characters } = useProjectStore();
-  return { title, synopsis, characters, scenes, selectedSceneIndex: selectedScene };
+  const scenesForPayload = scenes.map((s) => ({
+    index: s.index,
+    heading: s.heading,
+    participants: s.participants ? s.participants.split(',').map((p) => p.trim()) : [],
+    actionText: s.actionText,
+  }));
+  return {
+    title,
+    synopsis,
+    characters,
+    scenes: scenesForPayload,
+    selectedSceneIndex: selectedScene,
+  };
 }
 
-export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props) {
-  const { title, synopsis, characters } = useProjectStore();
+export default function AiPanel({
+  scenes,
+  selectedScene,
+  onSelectScene,
+  projectId,
+  onScenesSaved,
+}: Props) {
+  const { title, synopsis, characters, setProjectId } = useProjectStore();
   const payload = useProjectPayload(scenes, selectedScene);
   const [chatInput, setChatInput] = useState('');
   const [dialogueMode, setDialogueMode] = useState<'selected' | 'all'>('selected');
@@ -68,12 +94,12 @@ export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props)
     });
   };
 
-  // ─── Outline (button only) ───
+  // ─── Outline: stream then clean, save to Supabase (each scene separately) ───
   const handleGenerateOutline = async () => {
     if (!isReady || isGenerating) return;
     setIsGenerating(true);
     setGenerationProgress('Генерация поэпизодника...');
-    setMessages((m) => [...m, { role: 'ai', text: '⏳ Генерирую поэпизодник (40–45 сцен)...' }]);
+    setMessages((m) => [...m, { role: 'ai', text: '⏳ Генерирую поэпизодник...' }]);
 
     let fullText = '';
     const editor = (window as any).__kscriptEditor;
@@ -86,11 +112,37 @@ export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props)
           editor.commands.setContent(`<p>${fullText.replace(/\n/g, '</p><p>')}</p>`);
         }
       },
-      onDone: () => {
+      onDone: async () => {
+        const cleaned = applyAutoFormat(fullText);
+        if (editor) {
+          editor.commands.setContent(`<p>${cleaned.replace(/\n/g, '</p><p>')}</p>`);
+        }
+        const sceneCount = (cleaned.match(/^(ИНТ\.|ЭКСТ\.|НАТ\.)\s/mgi) || []).length;
+
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session?.user?.id) {
+            const pid = await getOrCreateProject(session.user.id, title, synopsis);
+            await saveOutlineToSupabase(pid, cleaned);
+            setProjectId(pid);
+            onScenesSaved?.();
+          }
+        } catch (e) {
+          console.error('Save outline to Supabase:', e);
+          toast({
+            title: 'Поэпизодник создан',
+            description: 'Сохранение в облако не выполнено (войдите в аккаунт).',
+            variant: 'destructive',
+          });
+        }
+
         setIsGenerating(false);
         setGenerationProgress('');
         setMessages((m) => [...m, { role: 'ai', text: '✅ Поэпизодник создан!' }]);
-        toast({ title: 'Поэпизодник создан', description: `${fullText.split(/ИНТ\.|НАТ\./i).length - 1} сцен` });
+        toast({
+          title: 'Поэпизодник создан',
+          description: sceneCount ? `${sceneCount} сцен` : 'Готово',
+        });
       },
       onError: (error) => {
         setIsGenerating(false);
@@ -101,13 +153,47 @@ export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props)
     });
   };
 
-  // ─── Dialogue ───
+  // ─── Dialogue: only selected scene context; replace scene block in-place; update Supabase ───
+  const replaceSceneBlockInEditor = (
+    editor: { getText: () => string; commands: { setContent: (html: string) => void } },
+    sceneIndex: number,
+    newSceneText: string
+  ) => {
+    const currentContent = editor.getText();
+    const lines = currentContent.split('\n');
+    let sceneStart = -1;
+    let sceneEnd = lines.length;
+    let sceneCount = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      if (/^(ИНТ\.|ЭКСТ\.|НАТ\.)/i.test(lines[i].trim())) {
+        sceneCount++;
+        if (sceneCount === sceneIndex) {
+          sceneStart = i;
+        } else if (sceneCount === sceneIndex + 1 && sceneStart >= 0) {
+          sceneEnd = i;
+          break;
+        }
+      }
+    }
+
+    if (sceneStart < 0) return;
+    const before = lines.slice(0, sceneStart).join('\n');
+    const after = lines.slice(sceneEnd).join('\n');
+    const newContent = [before, newSceneText.trim(), after].filter(Boolean).join('\n\n');
+    editor.commands.setContent(`<p>${newContent.replace(/\n/g, '</p><p>')}</p>`);
+  };
+
   const handleGenerateDialogue = async () => {
     if (!isReady || !hasOutline || isGenerating) return;
 
     if (dialogueMode === 'selected') {
       if (selectedScene === null) {
-        toast({ title: 'Выберите сцену', description: 'Укажите сцену в списке или выпадающем меню', variant: 'destructive' });
+        toast({
+          title: 'Выберите сцену',
+          description: 'Укажите сцену в списке или выпадающем меню',
+          variant: 'destructive',
+        });
         return;
       }
       const scene = scenes.find((s) => s.index === selectedScene);
@@ -125,7 +211,7 @@ export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props)
           ...payload,
           scene: {
             heading: scene.heading,
-            participants: scene.participants.join(', '),
+            participants: scene.participants,
             action: scene.actionText,
           },
         },
@@ -133,33 +219,20 @@ export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props)
           dialogueText += chunk;
           setGenerationProgress(`Диалог для сцены ${selectedScene}... (${dialogueText.length} символов)`);
         },
-        onDone: () => {
+        onDone: async () => {
+          const cleanedDialogue = applyAutoFormat(dialogueText);
           const editor = (window as any).__kscriptEditor;
           if (editor) {
-            const currentContent = editor.getText();
-            const lines = currentContent.split('\n');
-            let insertPos = -1;
-            let sceneCount = 0;
-
-            for (let i = 0; i < lines.length; i++) {
-              if (/^(ИНТ\.|НАТ\.)/i.test(lines[i].trim())) {
-                sceneCount++;
-                if (sceneCount === selectedScene) {
-                  let j = i + 1;
-                  while (j < lines.length && !/^(ИНТ\.|НАТ\.)/i.test(lines[j].trim())) j++;
-                  insertPos = j;
-                  break;
-                }
-              }
-            }
-
-            if (insertPos >= 0) {
-              lines.splice(insertPos, 0, '', dialogueText);
-              const newContent = lines.join('\n');
-              editor.commands.setContent(`<p>${newContent.replace(/\n/g, '</p><p>')}</p>`);
+            replaceSceneBlockInEditor(editor, selectedScene, cleanedDialogue);
+          }
+          if (projectId) {
+            try {
+              await updateSceneFullText(projectId, selectedScene, cleanedDialogue);
+              onScenesSaved?.();
+            } catch (e) {
+              console.error('Update scene in Supabase:', e);
             }
           }
-
           setIsGenerating(false);
           setGenerationProgress('');
           setMessages((m) => [...m, { role: 'ai', text: `✅ Диалог для сцены ${selectedScene} создан!` }]);
@@ -172,8 +245,8 @@ export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props)
         },
       });
     } else {
-      // Generate for all scenes sequentially
       setIsGenerating(true);
+      const editor = (window as any).__kscriptEditor;
 
       for (let i = 0; i < scenes.length; i++) {
         const scene = scenes[i];
@@ -189,35 +262,21 @@ export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props)
               ...payload,
               scene: {
                 heading: scene.heading,
-                participants: scene.participants.join(', '),
+                participants: scene.participants,
                 action: scene.actionText,
               },
             },
-            onDelta: (chunk) => { dialogueText += chunk; },
-            onDone: () => {
-              const editor = (window as any).__kscriptEditor;
-              if (editor) {
-                const currentContent = editor.getText();
-                const lines = currentContent.split('\n');
-                let insertPos = -1;
-                let sceneCount = 0;
-
-                for (let j = 0; j < lines.length; j++) {
-                  if (/^(ИНТ\.|НАТ\.)/i.test(lines[j].trim())) {
-                    sceneCount++;
-                    if (sceneCount === scene.index) {
-                      let k = j + 1;
-                      while (k < lines.length && !/^(ИНТ\.|НАТ\.)/i.test(lines[k].trim())) k++;
-                      insertPos = k;
-                      break;
-                    }
-                  }
-                }
-
-                if (insertPos >= 0) {
-                  lines.splice(insertPos, 0, '', dialogueText);
-                  const newContent = lines.join('\n');
-                  editor.commands.setContent(`<p>${newContent.replace(/\n/g, '</p><p>')}</p>`);
+            onDelta: (chunk) => {
+              dialogueText += chunk;
+            },
+            onDone: async () => {
+              const cleaned = applyAutoFormat(dialogueText);
+              if (editor) replaceSceneBlockInEditor(editor, scene.index, cleaned);
+              if (projectId) {
+                try {
+                  await updateSceneFullText(projectId, scene.index, cleaned);
+                } catch {
+                  // ignore per-scene update errors
                 }
               }
               resolve();
@@ -232,6 +291,7 @@ export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props)
 
       setIsGenerating(false);
       setGenerationProgress('');
+      onScenesSaved?.();
       setMessages((m) => [...m, { role: 'ai', text: '✅ Все диалоги созданы!' }]);
       toast({ title: 'Диалоги созданы', description: `Для ${scenes.length} сцен` });
     }
@@ -350,7 +410,7 @@ export default function AiPanel({ scenes, selectedScene, onSelectScene }: Props)
               </SelectTrigger>
               <SelectContent>
                 {scenes.map((s) => (
-                  <SelectItem key={s.index} value={s.index.toString()}>
+                  <SelectItem key={s.index} value={String(s.index)}>
                     {s.index}. {s.heading.slice(0, 35)}
                   </SelectItem>
                 ))}

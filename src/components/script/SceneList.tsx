@@ -1,10 +1,15 @@
 import { Hash } from 'lucide-react';
-import type { ParsedScene } from '@/types/screenplay';
 import { cn } from '@/lib/utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
+export interface SceneListItem {
+  index: number;
+  heading: string;
+  descriptionPreview?: string;
+}
+
 interface Props {
-  scenes: ParsedScene[];
+  scenes: SceneListItem[];
   selectedIndex: number | null;
   onSelect: (index: number) => void;
 }
@@ -37,7 +42,15 @@ export default function SceneList({ scenes, selectedIndex, onSelect }: Props) {
             )}
           >
             <span className="text-[10px] text-muted-foreground mr-1.5">{s.index}.</span>
-            <span className="truncate">{s.heading.replace(/^(ИНТ\.|НАТ\.)\s*/i, '').slice(0, 30)}</span>
+            <span className="font-medium truncate block">
+              {s.heading.replace(/^(ИНТ\.|ЭКСТ\.|НАТ\.)\s*/i, '').slice(0, 35)}
+            </span>
+            {s.descriptionPreview != null && s.descriptionPreview.length > 0 && (
+              <span className="text-[10px] text-muted-foreground line-clamp-2 mt-0.5 block">
+                {s.descriptionPreview.slice(0, 200)}
+                {s.descriptionPreview.length > 200 ? '…' : ''}
+              </span>
+            )}
           </button>
         ))}
       </div>

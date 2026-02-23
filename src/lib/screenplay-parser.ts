@@ -1,6 +1,6 @@
 import type { ParsedScene } from '@/types/screenplay';
 
-const HEADING_RE = /^(ИНТ\.|НАТ\.)\s*.+/i;
+const HEADING_RE = /^(ИНТ\.|ЭКСТ\.|НАТ\.)\s*.+/i;
 const ALLCAPS_RE = /^[А-ЯЁA-Z\s,]{2,}$/;
 
 export function parseScenes(text: string): ParsedScene[] {
@@ -75,7 +75,7 @@ export function isExpensiveLocation(heading: string): boolean {
 export function extractLocations(scenes: ParsedScene[]) {
   const map = new Map<string, { count: number; expensive: boolean }>();
   for (const s of scenes) {
-    const loc = s.heading.replace(/^(ИНТ\.|НАТ\.)\s*/i, '').trim();
+    const loc = s.heading.replace(/^(ИНТ\.|ЭКСТ\.|НАТ\.)\s*/i, '').trim();
     const existing = map.get(loc);
     if (existing) {
       existing.count++;
