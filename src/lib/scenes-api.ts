@@ -1,5 +1,9 @@
 import { supabase } from '@/integrations/supabase/client';
+import type { Database } from '@/integrations/supabase/types';
 import { applyAutoFormat, splitIntoSceneBlocks } from '@/lib/scene-sanitizer';
+
+type SceneInsert = Database['public']['Tables']['scenes']['Insert'];
+type ProjectInsert = Database['public']['Tables']['projects']['Insert'];
 
 export interface SceneForList {
   id: string;
@@ -17,7 +21,7 @@ export async function getOrCreateProject(
   title: string,
   synopsis: string
 ): Promise<string> {
-  const { data: existing } = await (supabase as any)
+  const { data: existing } = await supabase
     .from('projects')
     .select('id')
     .eq('user_id', userId)
@@ -26,19 +30,19 @@ export async function getOrCreateProject(
     .maybeSingle();
 
   if (existing?.id) {
-    await (supabase as any)
+    await supabase
       .from('projects')
       .update({ title, synopsis, updated_at: new Date().toISOString() })
       .eq('id', existing.id);
     return existing.id;
   }
 
-  const insert = {
+  const insert: ProjectInsert = {
     user_id: userId,
     title: title || '',
     synopsis: synopsis || '',
   };
-  const { data: created, error } = await (supabase as any)
+  const { data: created, error } = await supabase
     .from('projects')
     .insert(insert)
     .select('id')
@@ -57,9 +61,9 @@ export async function saveOutlineToSupabase(
   const cleaned = applyAutoFormat(rawOutlineText);
   const blocks = splitIntoSceneBlocks(cleaned);
 
-  await (supabase as any).from('scenes').delete().eq('project_id', projectId);
+  await supabase.from('scenes').delete().eq('project_id', projectId);
 
-  const inserts = blocks.map((b, i) => ({
+  const inserts: SceneInsert[] = blocks.map((b, i) => ({
     project_id: projectId,
     scene_number: i + 1,
     header: b.header,
@@ -70,7 +74,7 @@ export async function saveOutlineToSupabase(
 
   if (inserts.length === 0) return [];
 
-  const { data, error } = await (supabase as any)
+  const { data, error } = await supabase
     .from('scenes')
     .insert(inserts)
     .select();
@@ -81,7 +85,7 @@ export async function saveOutlineToSupabase(
 
 /** Fetch all scenes for a project. */
 export async function getScenesByProjectId(projectId: string): Promise<SceneForList[]> {
-  const { data, error } = await (supabase as any)
+  const { data, error } = await supabase
     .from('scenes')
     .select('*')
     .eq('project_id', projectId)
@@ -97,7 +101,7 @@ export async function updateSceneFullText(
   sceneNumber: number,
   fullSceneText: string
 ): Promise<void> {
-  const { error } = await (supabase as any)
+  const { error } = await supabase
     .from('scenes')
     .update({
       full_scene_text: fullSceneText,
