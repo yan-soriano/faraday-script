@@ -86,7 +86,7 @@ export function sanitizeSceneBlock(block: string): string {
 
 /**
  * Split full outline text into individual scene blocks (header + participants + description).
- * Expects format: ИНТ./ЭКСТ. ... \n PARTICIPANTS \n\n Description...
+ * Expects format: ИНТ./ЭКСТ./НАТ. ... then participants line, then description until next slugline.
  */
 export function splitIntoSceneBlocks(fullText: string): Array<{ header: string; participants: string; description: string; fullSceneText: string }> {
   const cleaned = trimToScreenplayOnly(fullText);
@@ -129,11 +129,41 @@ export function splitIntoSceneBlocks(fullText: string): Array<{ header: string; 
     }
 
     const description = descLines.join("\n").trim();
-    const fullSceneText = [header, participants, description].filter(Boolean).join("\n\n");
+    const fullSceneText =
+      participants && participants.length > 0
+        ? `${header}\n${participants}\n\n${description}`
+        : `${header}\n\n${description}`;
     scenes.push({ header, participants, description, fullSceneText });
   }
 
   return scenes;
+}
+
+/**
+ * Normalize layout of all scenes in a script:
+ * SLUGLINE
+ * PARTICIPANTS
+ *
+ * DESCRIPTION
+ *
+ * (next scene...)
+ */
+function normalizeSceneLayout(text: string): string {
+  const blocks = splitIntoSceneBlocks(text);
+  if (!blocks.length) return text.trim();
+
+  const scenesText = blocks.map((b) => {
+    const header = b.header.trim();
+    const participants = (b.participants || "").trim();
+    const description = (b.description || "").trim();
+
+    if (participants) {
+      return `${header}\n${participants}\n\n${description}`.trimEnd();
+    }
+    return `${header}\n\n${description}`.trimEnd();
+  });
+
+  return scenesText.join("\n\n");
 }
 
 /**
@@ -159,11 +189,12 @@ function normalizeBlankLines(text: string): string {
 }
 
 /**
- * Full auto-format: trim to screenplay, normalize slugline dashes, collapse excess blanks.
+ * Full auto-format: trim to screenplay, normalize slugline dashes, normalize scene layout, collapse excess blanks.
  * Call after Gemini response before saving or inserting into editor.
  */
 export function applyAutoFormat(raw: string): string {
   const trimmed = trimToScreenplayOnly(raw);
   const dashes = normalizeSluglineDashes(trimmed);
-  return normalizeBlankLines(dashes);
+  const layout = normalizeSceneLayout(dashes);
+  return normalizeBlankLines(layout);
 }

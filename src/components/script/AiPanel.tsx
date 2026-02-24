@@ -181,7 +181,8 @@ export default function AiPanel({
     const before = lines.slice(0, sceneStart).join('\n');
     const after = lines.slice(sceneEnd).join('\n');
     const newContent = [before, newSceneText.trim(), after].filter(Boolean).join('\n\n');
-    editor.commands.setContent(`<p>${newContent.replace(/\n/g, '</p><p>')}</p>`);
+    const autoFormatted = applyAutoFormat(newContent);
+    editor.commands.setContent(`<p>${autoFormatted.replace(/\n/g, '</p><p>')}</p>`);
   };
 
   const handleGenerateDialogue = async () => {
